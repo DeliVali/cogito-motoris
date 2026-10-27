@@ -9731,7 +9731,9 @@ def main() -> int:
                       *(["--ple-gguf", str(ple)] if len(shards) <= 2 else [])]
     args = [*model_args,
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
+            # 0.7: the draft layer extends a window only when it is that sure (RTX 5070, Ryzen 5 9600X, Q2_0, lossless:
+            # 96.9 -> 100.2 tok/s over four prompts and three runs; 0.3, 0.8 and 0.9 were no better than 0.5)
+            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.7", "--mtp", str(rt),
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
