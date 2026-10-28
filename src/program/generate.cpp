@@ -11062,7 +11062,10 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP is off by default: %.1f%% of the experts are in the GPU cache, so "
                                      "few are missed and skipping them costs more draft acceptance than it saves; "
                                      "STRATA_ROUTE_TAIL_SKIP=7 turns it on\n", 100.0 * (double) cached_experts / (double) host_res.size());
-            if (tail_default_ok) strata::core::set_tail_skip_rank(7);
+            // cogito motoris: no default - lossless unless STRATA_ROUTE_TAIL_SKIP=7 asks for it.  Qwen3.8-Flash-Next Q2_0 on an RTX 5070,
+            // teacher-forced (tools/quant_quality.py run --serving): KL 0.137 and 86.9% top-1 against the run without it, far above
+            // the 0.003-0.006 measured on chat prompts upstream.
+            (void) tail_default_ok;
             if (strata::core::tail_skip_rank() > 0 && !all_experts_resident)
                 std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON%s: a missed expert that every token of a verify window routes at rank %d or "
                                      "lower is skipped (+10..20%% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); "

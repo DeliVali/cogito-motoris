@@ -57,8 +57,11 @@ constexpr float kRoutePriorSmallCard = 1.5f;
 
 /// STRATA_ROUTE_PRIOR when the user set nothing: kRoutePriorSmallCard (residency-biased routing, changes which experts run; owner-approved for 12 GB
 /// cards) on a discrete CUDA card of 13 GiB or less, 0 everywhere else.  Measured on an RTX 3060 12 GB only.
+/// cogito motoris: 0 on every card, so a run is lossless unless STRATA_ROUTE_PRIOR asks for the trade (it changes which
+/// experts run; on Qwen3.8-Flash-Next Q2_0, RTX 5070, the measured routing changes moved teacher-forced answers by KL 0.1+).
 inline float route_prior_default(bool hip, bool integrated, double total_bytes, bool v026 = false) {
-    return !v026 && !hip && !integrated && total_bytes > 0.0 && total_bytes / 1073741824.0 <= kSmallCardGiB ? kRoutePriorSmallCard : 0.0f;
+    (void) hip; (void) integrated; (void) total_bytes; (void) v026;
+    return 0.0f;
 }
 
 /// STRATA_GR_V3 (the stream-split hyper-connection read, another summation order) when the user set nothing: ON for a discrete compute capability
