@@ -3968,6 +3968,19 @@ class Service:
         self.idle_after_s = 2.0
         self.idle_shrunk = False                       # the cache is shrunk to the idle reserve now
         self.idle_epoch = 0                            # bumped by every inference turn; a pending shrink checks it
+        # cogito motoris: "vram_mode" auto (default with an idle reserve) | fast | apps.  apps: requests also leave
+        # vram_apps_reserve_mib free (other programs keep room while the model answers, decode about 9% slower on an RTX
+        # 5070); fast: the full cache for requests; auto: apps while other programs hold more than vram_apps_margin_mib
+        # above the least they held since the engine started, back to fast vram_apps_hold_s after they stop.
+        self.vram_mode = "fast"
+        self.apps_reserve_mib = 2560                   # vram_mode apps: the fixed reserve requests leave free
+        self.apps_margin_mib = 1536                    # auto: apps mode once other programs use this much above the desktop
+        self.apps_hold_s = 30.0
+        self.apps_now_mib = 0                          # auto: what other programs use above the least seen (the desktop)
+        self.apps_history: collections.deque = collections.deque()   # (monotonic time, apps_now_mib) of the last 10 min
+        self.apps_active_at = 0.0                      # the last time the watcher saw other programs above the margin
+        self.apps_baseline_mib: int | None = None
+        self.vram_watch = None
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -4136,15 +4149,70 @@ class Service:
                 if active:
                     self.client_disconnect_cancels += 1
 
+    def apps_mode(self) -> bool:
+        """Requests leave room for other programs now (vram_mode apps, or auto with other programs active)."""
+        if self.vram_mode == "apps":
+            return True
+        return self.vram_mode == "auto" and time.monotonic() - self.apps_active_at < self.apps_hold_s
+
+    def _watch_vram(self) -> None:
+        """vram_mode auto: once a second, the VRAM other programs hold against the least they held since this engine
+        started.  It only sets apps_active_at; the cache is resized at the next request's start or idle shrink."""
+        was = False
+        while True:
+            time.sleep(1.0)
+            proc = getattr(self.engine, "proc", None)
+            if proc is None or not self.engine.alive():
+                self.apps_baseline_mib = None
+                continue
+            others = self.vram_watch.others_mib({proc.pid})
+            if others is None:
+                continue
+            if self.apps_baseline_mib is None or others < self.apps_baseline_mib:
+                self.apps_baseline_mib = others
+            t = time.monotonic()
+            self.apps_now_mib = others - self.apps_baseline_mib
+            self.apps_history.append((t, self.apps_now_mib))
+            while self.apps_history and self.apps_history[0][0] < t - 600:
+                self.apps_history.popleft()
+            if self.apps_now_mib >= self.apps_margin_mib:
+                self.apps_active_at = t
+            now = self.apps_mode()
+            if now != was:
+                print(f"[motoris] vram: {'apps' if now else 'fast'} mode (programs above the desktop: {self.apps_now_mib} MiB; "
+                      f"requests leave {self.apps_headroom_mib() if now else 0} MiB free)", flush=True)
+                was = now
+
+    def apps_headroom_mib(self) -> int:
+        """vram_mode auto, apps mode: the VRAM to leave free for other programs, from how much they grew in the last
+        10 minutes (their peak minus what they use now) plus 512 MiB, kept within 1 and 3 GiB: room for what they were
+        seen to need, and the expert cache keeps most of its slots."""
+        peak = max((m for _, m in self.apps_history), default=self.apps_now_mib)
+        return int(min(3072, max(1024, peak - self.apps_now_mib + 512)))
+
+    def _request_reserve(self) -> int | None:
+        """The VRAM a request's turn leaves free: in apps mode the fixed apps reserve (vram_mode apps) or the measured
+        headroom (auto), else the reserve outside idle time."""
+        base = self._engine_reserve()
+        if not self.apps_mode():
+            # auto with programs open below the trigger: a small buffer for them to grow into (RTX 5070, Q2_0: a 1024
+            # MiB reserve, about 0.6 GB free, cost 1.4% decode)
+            light = self.vram_mode == "auto" and self.apps_now_mib >= 256
+            return max(1024, base or 0) if light else base
+        want = self.apps_reserve_mib if self.vram_mode == "apps" else self.apps_headroom_mib()
+        # the engine gives back whole 512 MiB segments and may end one short of the reserve (1024 and 1280 MiB asks left 809-811 free)
+        return max(want + 512, base or 0)
+
     def _idle_grow(self) -> None:
         """The start of an inference turn (the caller holds self.fifo): a cache shrunk for the idle reserve grows back
-        to what the reserve outside idle time allows (it takes only VRAM that is free now)."""
+        to what the request reserve allows (it takes only VRAM that is free now)."""
         self.idle_epoch += 1
-        if not self.idle_shrunk:
+        apps = self.apps_mode() or (self.vram_mode == "auto" and self.apps_now_mib >= 256)
+        if not self.idle_shrunk and not apps:
             return
         self.idle_shrunk = False
         try:
-            self.engine.vram(self._engine_reserve())
+            self.engine.vram(self._request_reserve())
         except (ValueError, EngineDied) as e:
             print(f"[motoris] the expert cache did not grow back for the request: {e}", flush=True)
 
@@ -9071,6 +9139,26 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             if isinstance(after, (int, float)) and not isinstance(after, bool) and after >= 0:
                 svc.idle_after_s = float(after)
             print(f"[motoris] idle VRAM reserve: {idle} MiB free for other programs after {svc.idle_after_s:g} s without a request", flush=True)
+            mode = cfg.get("vram_mode", "auto")
+            svc.vram_mode = mode if mode in ("auto", "fast", "apps") else "auto"
+            for key, attr in (("vram_apps_reserve_mib", "apps_reserve_mib"), ("vram_apps_trigger_mib", "apps_margin_mib")):
+                v = cfg.get(key)
+                if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                    setattr(svc, attr, v)
+            hold = cfg.get("vram_apps_hold_s")
+            if isinstance(hold, (int, float)) and not isinstance(hold, bool) and hold >= 0:
+                svc.apps_hold_s = float(hold)
+            if svc.vram_mode == "auto":
+                from vram_watch import VramWatch
+                svc.vram_watch = VramWatch(int(cfg.get("gpu", 0)) if isinstance(cfg.get("gpu", 0), int) else 0)
+                if svc.vram_watch.available():
+                    threading.Thread(target=svc._watch_vram, daemon=True).start()
+                else:
+                    print("[motoris] vram_mode auto needs NVML (libnvidia-ml); staying in fast mode", flush=True)
+                    svc.vram_mode = "fast"
+            print(f"[motoris] vram_mode {svc.vram_mode}" + (f": apps mode above {svc.apps_margin_mib} MiB of other programs' VRAM"
+                  if svc.vram_mode == "auto" else f": requests leave {svc.apps_reserve_mib} MiB free" if svc.vram_mode == "apps" else ""),
+                  flush=True)
         else:
             print('[motoris] "vram_idle_reserve_mib" needs "vram_elastic": true; ignored', flush=True)
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
