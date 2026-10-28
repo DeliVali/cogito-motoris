@@ -9749,6 +9749,9 @@ def main() -> int:
             # the draft layer's hidden-input norm per stream (llama.cpp's MTP graph) instead of one RMS over all four:
             # drafts only, so the answers are the same; RTX 5070, Q2_0, six interleaved runs: 101.6 -> 104.2 tok/s
             "--mtp-hnorm", "stream",
+            # prompt-lookup windows up to 16 tokens (graphs for 8 and 16 only) while the MTP keeps --spec: the same
+            # output; RTX 5070, Q2_0: rewriting a 1.9K-token file 129-136 -> 171-177 tok/s, ordinary prompts 98.8 -> 99.2
+            "--lookup-max-t", "16", "--lookup-sizes", "8,16",
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
