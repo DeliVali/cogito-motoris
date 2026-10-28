@@ -9746,6 +9746,9 @@ def main() -> int:
             # 1024 MiB reserved instead of 700: about 0.6 GB stays free while answering, above the ~500 MiB under which
             # MTP graph launches were reported to hang (#2065); RTX 5070, Q2_0: 103.9 -> 102.4 tok/s
             "--vram-reserve-mib", "1024",
+            # the draft layer's hidden-input norm per stream (llama.cpp's MTP graph) instead of one RMS over all four:
+            # drafts only, so the answers are the same; RTX 5070, Q2_0, six interleaved runs: 101.6 -> 104.2 tok/s
+            "--mtp-hnorm", "stream",
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
