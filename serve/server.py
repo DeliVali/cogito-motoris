@@ -7399,6 +7399,12 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
+                if path in ("/tokenize", "/v1/tokenize"):    # cogito motoris: llama-server's /tokenize, so clients
+                    text = req.get("content", "")            # (an agent harness budgeting its prompt) count exactly
+                    if not isinstance(text, str):
+                        raise ValueError("content: a string")
+                    self._json(200, {"tokens": list(svc.tok.encode(text, parse_special=req.get("parse_special", True) is not False))})
+                    return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
