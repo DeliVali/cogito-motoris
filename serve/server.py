@@ -3960,6 +3960,14 @@ class Service:
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
+        # cogito motoris (opt-in, needs "vram_elastic": true): "vram_idle_reserve_mib" keeps that much VRAM free for other
+        # programs while no request runs; the expert cache grows back to its full size when a request starts, so decode
+        # speed is that of the full cache.  "vram_idle_after_s" (default 2) is the idle time before it shrinks, so the
+        # turns of one conversation do not shrink and grow it between them.
+        self.idle_reserve_mib: int | None = None
+        self.idle_after_s = 2.0
+        self.idle_shrunk = False                       # the cache is shrunk to the idle reserve now
+        self.idle_epoch = 0                            # bumped by every inference turn; a pending shrink checks it
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -4128,8 +4136,54 @@ class Service:
                 if active:
                     self.client_disconnect_cancels += 1
 
+    def _idle_grow(self) -> None:
+        """The start of an inference turn (the caller holds self.fifo): a cache shrunk for the idle reserve grows back
+        to what the reserve outside idle time allows (it takes only VRAM that is free now)."""
+        self.idle_epoch += 1
+        if not self.idle_shrunk:
+            return
+        self.idle_shrunk = False
+        try:
+            self.engine.vram(self._engine_reserve())
+        except (ValueError, EngineDied) as e:
+            print(f"[motoris] the expert cache did not grow back for the request: {e}", flush=True)
+
+    def _idle_schedule(self) -> None:
+        """The end of an inference turn: shrink the cache to the idle reserve once no turn has run for idle_after_s."""
+        if self.idle_reserve_mib is None:
+            return
+        epoch = self.idle_epoch
+
+        def shrink():
+            if self.idle_epoch != epoch or self.idle_shrunk or not self.fifo.acquire(blocking=False):
+                return
+            try:
+                if self.idle_epoch == epoch and self.engine.alive():
+                    out = self.engine.vram(max(self.idle_reserve_mib, self._engine_reserve() or 0))
+                    self.idle_shrunk = True
+                    print(f"[motoris] idle: expert cache {out.get('expert_cache_mib')} of {out.get('expert_cache_full_mib')} MiB, "
+                          f"{out.get('vram_free_mib')} MiB of VRAM free for other programs", flush=True)
+            except (ValueError, EngineDied) as e:
+                print(f"[motoris] idle VRAM reserve not applied: {e}", flush=True)
+            finally:
+                self.fifo.release()
+
+        t = threading.Timer(self.idle_after_s, shrink)
+        t.daemon = True
+        t.start()
+
     @contextlib.contextmanager
     def _inference_fifo(self, deadline: float | None, cancel: threading.Event | None = None):
+        with self._inference_fifo_turn(deadline, cancel):
+            if self.idle_reserve_mib is not None:
+                self._idle_grow()
+            try:
+                yield
+            finally:
+                self._idle_schedule()
+
+    @contextlib.contextmanager
+    def _inference_fifo_turn(self, deadline: float | None, cancel: threading.Event | None = None):
         if deadline is None:
             with self.fifo:
                 yield
@@ -5377,6 +5431,9 @@ class Service:
                             self.fifo.release()
                             raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                         turn.callback(self.fifo.release)
+                        if self.idle_reserve_mib is not None:   # cogito motoris: the full cache for this turn, the idle
+                            self._idle_grow()                   # reserve again once no turn has run for a while
+                            turn.callback(self._idle_schedule)
                     else:
                         yield "ping", None
             with turn:
@@ -9006,6 +9063,16 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
+    idle = cfg.get("vram_idle_reserve_mib")
+    if isinstance(idle, int) and not isinstance(idle, bool) and idle > 0:
+        if cfg.get("vram_elastic") is True:
+            svc.idle_reserve_mib = idle
+            after = cfg.get("vram_idle_after_s")
+            if isinstance(after, (int, float)) and not isinstance(after, bool) and after >= 0:
+                svc.idle_after_s = float(after)
+            print(f"[motoris] idle VRAM reserve: {idle} MiB free for other programs after {svc.idle_after_s:g} s without a request", flush=True)
+        else:
+            print('[motoris] "vram_idle_reserve_mib" needs "vram_elastic": true; ignored', flush=True)
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))

@@ -6350,7 +6350,8 @@ def write_config(path: Path, cfg: dict):
 # "args_written" (strata_control/user_args.py) is setup's own; "user_args" is not in SETUP_KEYS on purpose: carry_over keeps it,
 # then applies the person's options over the generated ones
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
-                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written"})
+                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written",
+                        "vram_elastic", "vram_idle_reserve_mib"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
@@ -7882,6 +7883,11 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         cfg["cuda"] = 12
     if hip:
         cfg["backend"] = "hip"
+    elif gpu.get("count", 1) == 1:
+        # cogito motoris: about 2.4 GB of VRAM free for other programs while no request runs; the expert cache grows back
+        # to its full size for each request (RTX 5070, Q2_0, lossless: 102.9 -> 102.8 tok/s, 2464 MiB free when idle)
+        cfg["vram_elastic"] = True
+        cfg["vram_idle_reserve_mib"] = 2560
     if gpu.get("count", 1) > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]
         cfg["gpus_asked"] = True
