@@ -9734,6 +9734,9 @@ def main() -> int:
             # 0.7: the draft layer extends a window only when it is that sure (RTX 5070, Ryzen 5 9600X, Q2_0, lossless:
             # 96.9 -> 100.2 tok/s over four prompts and three runs; 0.3, 0.8 and 0.9 were no better than 0.5)
             "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.7", "--mtp", str(rt),
+            # 288 adaptive-tier swaps per round instead of 96: the cache follows the conversation faster (RTX 5070,
+            # Q2_0, lossless, four prompts: 97.6 -> 103.5 tok/s over two runs; 192 101.2, 384 103.2 and noisier)
+            "--adapt-swaps", "288",
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
