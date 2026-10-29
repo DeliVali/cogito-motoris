@@ -1,193 +1,125 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
-    <img src="apps/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
-  </picture>
-</p>
+# cogito motoris
 
-<h3 align="center">Run powerful AI on your own computer.</h3>
-<p align="center">Chat, code and work with images, locally.</p>
+A fork of [Strata](https://github.com/Niko1221/Strata) 0.2.7 tuned for one model on one machine:
+Qwen3.8-Flash-Next (125B MoE, 6B active) on an RTX 5070 12 GB, a Ryzen 5 9600X and 64 GB of DDR5-6400.
+Strata's engine, server and setup are kept; the changes are in what runs by default, how VRAM is shared with other
+programs, and longer verify windows for text the model copies. Strata's own README is in
+[README.strata.md](README.strata.md).
 
-<p align="center">
-  <a href="#models">Models</a> · <a href="#install"><b>Install</b></a> ·
-  <a href="#hardware">Hardware</a> · <a href="#tools">Tools</a> ·
-  <a href="#help">Help</a> · <a href="#support-strata">Support</a>
-</p>
+## What it measures
 
-<p align="center">
-  <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?label=download&color=0ab887" alt="Download Strata"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="MIT license"></a>
-  <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Support Strata on Buy Me a Coffee"></a>
-</p>
+Same machine, the ISTA-DASLab GSQ-RCO files, temperature 0, four short prompts (a story, CSV parsing in Python, how
+a CPU cache works, a refactor), each request on a fresh server, interleaved runs. Every row keeps the model's own routing, so its answers are those of greedy decoding of its file, up to the
+order of floating point sums.
 
-<p align="center"><sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.pl.md">Polski</a></sub></p>
+| Setup | Decode |
+| --- | ---: |
+| Strata 0.2.7, IQ2_XS, with route prior and tail skip off | 83.2 tok/s |
+| the same, Q2_0 | 96.7 tok/s |
+| cogito motoris, Q2_0 | 99-104 tok/s |
+| cogito motoris, Q2_0, rewriting a file of 1,900 tokens | 171-177 tok/s (Strata settings: 129-136) |
 
-**Free, open source, and yours to run.** Use Strata on your desktop or with your favorite coding tools. No account needed.
+Prompt reading with cogito motoris on Q2_0: about 1,900 tok/s at 2.8K tokens, 2,300 at 9.6K and 2,700 at 27.8K.
 
-## Models
+Strata's own defaults decode faster on 12 GB cards (116 tok/s on its short chat test here) because two of them
+change which experts run. On this model and quant they move the answers measurably, see below, so they are off.
 
-We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where a compatible model fits.
+## What changed from Strata 0.2.7
 
-<details>
-<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.8-Flash-Next</b></summary>
+Lossless by default. The route prior and the route tail skip are off unless `STRATA_ROUTE_PRIOR` or
+`STRATA_ROUTE_TAIL_SKIP` asks for them. With `tools/quant_quality.py run --serving` the tail skip moved
+the answers on fixed text by KL 0.137 (86.9% top-1 agreement) against the same run without it. Upstream measured
+0.003 to 0.006 on chat prompts with another method; on this setup it is closer to a quant tier.
 
-| Provider | Choices |
-| --- | --- |
-| **ISTA-DASLab · recommended** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S. [Coder: IQ1\_M](docs/MODELS.md#coder) for coding. |
-| **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
-| **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF). Lower memory use but slower. |
-| **Other options** | [Swift 1.5](docs/MODELS.md#swift-15), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
+Temperature 0 is greedy. Requests without thinking no longer get the model card's `presence_penalty` added
+(ported from Niko1221/Strata#3295).
 
-[Compare sizes, memory needs and compatibility](docs/MODELS.md).
+Setup writes these engine flags, each kept after an interleaved A/B on this machine:
 
-</details>
-
-<details>
-<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
-
-**Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
-
-[Model guide and compatibility](docs/QWEN36.md).
-
-</details>
-
-<details>
-<summary><img src="docs/media/models/deepseek.svg" width="22" alt="" align="middle"> &nbsp;<b>DeepSeekV4.1-Flash-1017</b></summary>
-
-In the **desktop app** and the **Terminal**. What does not fit in memory is read from your SSD, so it needs a lot of free
-disk space.
-
-| Set (IST-DAS) | Download | Free disk needed |
+| Flag | Before | After |
 | --- | ---: | ---: |
-| 1.75 bpw | 239 GB | about 245 GB |
-| 2.00 bpw | 257 GB | about 265 GB |
-| 2.25 bpw | 274 GB | about 280 GB |
+| `--spec-min-p 0.7` (was 0.5) | 96.5 | 97.6 tok/s |
+| `--adapt-swaps 288` (was 96) | 97.6 | 103.5 tok/s |
+| `--mtp-hnorm stream` | 101.6 | 104.2 tok/s |
+| `--lookup-max-t 16 --lookup-sizes 8,16` | 129-136 | 171-177 tok/s on file rewrites, same output |
+| `--vram-reserve-mib 1024` (was 700) | 103.9 | 102.4 tok/s |
 
-Runs on NVIDIA RTX 30, 40 and 50 series (Windows and Linux), AMD Radeon AI PRO R9700 (Linux), and AMD Ryzen AI Max — Strix Halo
-(Windows). Setup downloads the files and the DeepSeek engine, then starts the model.
+The last one costs a little on purpose: with 700 MiB reserved the card had 279 MiB free under load, and MTP graph
+launches were reported to hang below about 500 MiB (Niko1221/Strata#2065).
 
-```sh
-strata launch --family deepseek41 --model ist-das-2.00bpw --plan
-```
+`--lookup-max-t` is a port of Niko1221/Strata#4040. Prompt lookup windows grow to 16 tokens while the MTP keeps its
+own window, so a turn that rewrites a file verifies more of it per pass.
 
-Measured with the 2.00 bpw set on Strata 0.2.5 (Strix Halo: 0.2.7). Output is the speed of the answer, prompt is how fast Strata reads your input.
+`POST /tokenize` answers as llama-server does, so clients that budget prompts by counting tokens count exactly.
 
-| Hardware | Output | Prompt |
+## Sharing VRAM with other programs
+
+With `"vram_elastic": true` and `"vram_idle_reserve_mib": 2560` in the run config (setup writes both on one NVIDIA
+GPU), the server shrinks the expert cache 2 s after the last request and leaves about 2.4 GB free. A request grows it
+back to its full size, so decode speed does not change; it only takes VRAM that is free at that moment.
+
+While answering, `vram_mode` decides how much stays free. In `auto`, the default, a watcher reads through NVML how
+much VRAM other programs hold above the least they held since the engine started (the desktop):
+
+| Other programs | Free while answering | Decode |
 | --- | ---: | ---: |
-| RTX 5070 12 GB, 64 GB RAM | 4 to 6 tokens/s | about 110 tokens/s (4K) |
-| RTX 3060 12 GB, 46 GB RAM | 9 to 11 tokens/s | about 155 tokens/s (4K) |
-| 1x Radeon AI PRO R9700, 251 GB RAM | 21 to 25 tokens/s | 320 to 360 tokens/s (8K) |
-| 4x Radeon AI PRO R9700 | 74 to 77 tokens/s | 400 to 450 tokens/s (8K) |
-| Ryzen AI Max+ 395 (Strix Halo), 128 GB unified | 19 to 21 tokens/s (code), 11 (chat) | 87 tokens/s (4K), 125 tokens/s (8K) |
+| none open | 0.6 GB | 99-104 tok/s |
+| below 1.5 GB (`vram_apps_trigger_mib`) | about 1.3 GB | about 3% slower |
+| 1.5 GB or more | their growth over the last 10 minutes plus 512 MiB, 1 to 3 GiB | 75-100 tok/s with a 2 GB program open |
 
-[Memory, disk and details](docs/DEEPSEEK41.md) · [Release notes](https://github.com/Niko1221/Strata/releases)
-
-</details>
-
-<a id="the-other-sizes"></a>
-
-Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-memory).
+It returns to the full cache 30 s after they close. `"vram_mode": "fast"` or `"apps"` fixes the mode. The resize
+happens when a request starts, so a program opened in the middle of a long answer gets its room at the next one.
 
 ## Install
 
-<a id="option-a-the-strata-app"></a>
-
-### Desktop app
-
-**[Download Strata for Windows, Linux or Mac →](https://github.com/Niko1221/Strata/releases/latest)**
-
-Install the app, choose a model, and start chatting. There is one installer for each system. On first start the app
-downloads the engine for your graphics card. [Help with the installer](docs/INSTALL.md#the-app).
-
-<sub>Files: `Strata-0.2.7-windows-x64-setup.exe` · `Strata-0.2.7-linux-x86_64.AppImage` · `Strata-0.2.7-macos-arm64.dmg`</sub>
-
-<p align="center">
-  <img src="docs/media/app-chat.png" width="900" alt="Strata desktop app with a chat and live code preview side by side">
-  <br><sub>Chat, files and a live preview in one window.</sub>
-</p>
-
-<a id="option-b-the-terminal-one-line"></a>
-
-### Terminal app
-
-Prefer the terminal? Install Strata, then run **`strata launch`**.
-
-<details open>
-<summary><b>Install commands</b></summary>
-
-**Linux / Mac**
+Linux, an NVIDIA GPU, the CUDA toolkit and a C++20 compiler.
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+git clone https://github.com/DeliVali/cogito-motoris.git
+cd cogito-motoris
+./setup.sh --family qwen --model Q2_0 --build --no-start
+./run-q2_0.sh
 ```
 
-**Windows PowerShell**
+Setup downloads the model (about 66 GB) unless `--gguf-dir` points at files you already have, prepares it, fetches
+the MTP draft layer and writes `strata-q2_0.json` with the flags above. The server listens on
+http://127.0.0.1:8080/v1 (OpenAI) and /v1/messages (Anthropic).
 
-```powershell
-irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+To serve it from Cogito, add a model entry that starts it:
+
+```toml
+[[model]]
+id        = "qwen3.8-flash-motoris"
+api       = "openai"
+base_url  = "http://127.0.0.1:8080/v1"
+model     = "qwen3.8-flash-next-q2_0-motoris"
+serve     = "strata"
+args      = { strata = "/path/to/cogito-motoris", config = "strata-q2_0-cogito.json", ctx = 32768 }
 ```
 
-On Windows, open a new terminal afterwards. Then:
+## Measuring a change
 
-```sh
-strata launch
-```
+`STRATA_DECODE_TIMING=1 STRATA_VERIFY_PROFILE=1` print where each decode window goes. On this machine with Q2_0 the CPU computes the misses of the expert cache at about 48 GB/s, close to what two channels of DDR5 give, and the cache hits
+70-75% of the routed experts.
 
-Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL_LAUNCH.md).
+`tools/quant_quality.py` scores a setting against a reference by KL on five segments of fixed text; add
+`--serving` to keep the expert cache and its adaptive tier as they run when serving.
 
-</details>
+## Tried and dropped
 
-<p align="center">
-  <img src="docs/media/terminal-monitor.png" width="900" alt="Strata terminal app showing model activity, speed, memory and recent requests">
-  <br><sub>Watch your model and hardware while it runs.</sub>
-</p>
+Measured here and not kept: more CPU pool workers on the SMT threads (5 workers 80.6 tok/s, 8 workers 82.3, 11
+workers 71.8), `--spec` 3, 5 or 6, `--mtp-q4 all`, `STRATA_ADAPT_OVERLAP=1` (99.8 against 102.3),
+`STRATA_SPEC_COST=1`, prefetching the next layer's experts (Strata measured it at 0.91-0.98x and turned it off), and
+Niko1221/Strata#4039 (same output, no gain on a 12 GB card). Niko1221/Strata#4283 needs a real port: the prompt
+copy loop in 0.2.7 is not the one it was written against.
 
-<a id="build-from-source"></a>
+## Limits
 
-[Build from source](docs/SOURCE_INSTALL.md) · [Docker](docs/DOCKER.md) · [Full install guide](docs/INSTALL.md)
+One NVIDIA GPU. Only Qwen3.8-Flash-Next is measured; the DeepSeek V4.1 and Qwen3.6 paths come from Strata and
+are untested here. Speeds are from one machine and move a few percent between runs and with what else the desktop
+is doing.
 
-<a id="what-you-need"></a>
+## Upstream and license
 
-## Hardware
-
-| Supported hardware | Guide |
-| --- | --- |
-| **NVIDIA GeForce RTX 20 / 30 / 40 / 50 series** | [NVIDIA setup](docs/INSTALL.md#what-you-need) |
-| **AMD Radeon RX 7700 / 7800 / 7900, RX 9060 / 9070, AI PRO R9700** | [AMD setup](docs/AMD_HIP.md) |
-| **AMD Radeon RX 6800 / 6900 · experimental** | [RX 6000 setup](docs/AMD_HIP.md#rdna2-gfx1030) |
-| **Intel Arc · Linux** | [Intel setup](docs/INTEL_ARC.md) |
-| **Apple Silicon · M1 or newer** | [Mac setup](docs/MAC.md) |
-| **AMD Ryzen AI Max · Strix Halo** | [Strix Halo setup](docs/STRIX_HALO.md) |
-
-<a id="using-it"></a>
-
-## Tools
-
-**Claude Code · Codex CLI · OpenCode · oh-my-pi · pi.dev · Hermes Agent · OpenClaw**, and more through the OpenAI- and Anthropic-compatible APIs.
-
-Run **`strata connect`** to see setup instructions for your tool. [Connection guide](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
-
-<a id="guides"></a>
-<a id="how-fast-is-it"></a>
-<a id="how-does-it-work"></a>
-<a id="something-went-wrong"></a>
-
-## Help
-
-[All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
-[Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](CONTRIBUTING.md)
-
-## Support Strata
-
-**Help keep local AI open to everyone.** A coffee helps fund development and testing on more hardware.
-
-<a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee: support Strata" height="48"></a>
-
-[MIT license](LICENSE) · [Credits and model licenses](docs/HOW_IT_WORKS.md#credits) · [Privacy](docs/SAFETY.md)
-
-<a id="option-c-let-your-ai-set-it-up"></a>
-
-<sub>For AI tools and automated readers: <a href="AGENTS.md">technical reference</a> · <a href="docs/AI_SETUP.md">setup instructions</a>.</sub>
-
-**Sponsorships, hardware partnerships or collaborations:** [niko.veit@outlook.com](mailto:niko.veit@outlook.com).
-
+`upstream` is Niko1221/Strata. Changes are kept small enough to rebase onto it, and ports name the pull request they
+come from. MIT, as Strata.
